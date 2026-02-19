@@ -7,12 +7,16 @@
  *   POST /v1/audit — Skill security audit ($0.02 USDC)
  *   GET  /         — Service info
  *
- * Payment: USDC on Base (eip155:8453), x402 protocol
- * Revenue: 0x4a47B25c90eA79e32b043d9eE282826587187ca5
+ * Payment: USDC on Base (eip155:8453) and Solana (SVM), x402 protocol
+ * Revenue: 0x4a47B25c90eA79e32b043d9eE282826587187ca5 (EVM)
+ *          3vD1Rt5qMz4vZR8jGND8n9YnVNvPBvX8tyTrWzZ3TMSb (Solana)
  */
 
-const ORAC_WALLET = '0x4a47B25c90eA79e32b043d9eE282826587187ca5';
+const ORAC_EVM_WALLET = '0x4a47B25c90eA79e32b043d9eE282826587187ca5';
+const ORAC_SOL_WALLET = '3vD1Rt5qMz4vZR8jGND8n9YnVNvPBvX8tyTrWzZ3TMSb';
 const USDC_BASE = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
+const USDC_SOLANA = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+const DEXTER_SOL_FEE_PAYER = 'DEXVS3su4dZQWTvvPnLDJLRK1CeeKG6K3QqdzthgAkNV';
 const FACILITATOR_URL = 'https://x402.dexter.cash';
 
 // Prices in USDC (6 decimals)
@@ -330,23 +334,43 @@ function buildPaymentRequired(path, url) {
   const amount = PRICES[path];
   if (!amount) return null;
 
+  const description = path === '/v1/scan'
+    ? 'Orac Safety Layer — prompt injection scan'
+    : 'Orac Safety Layer — skill security audit';
+
   return {
     x402Version: 2,
-    accepts: [{
-      scheme: 'exact',
-      network: 'eip155:8453',
-      amount: amount.toString(),
-      asset: USDC_BASE,
-      payTo: ORAC_WALLET,
-      maxTimeoutSeconds: 300,
-      description: path === '/v1/scan'
-        ? 'Orac Safety Layer — prompt injection scan'
-        : 'Orac Safety Layer — skill security audit',
-      extra: {
-        name: 'USD Coin',
-        version: '2'
+    accepts: [
+      // Base (EVM)
+      {
+        scheme: 'exact',
+        network: 'eip155:8453',
+        amount: amount.toString(),
+        asset: USDC_BASE,
+        payTo: ORAC_EVM_WALLET,
+        maxTimeoutSeconds: 300,
+        description,
+        extra: {
+          name: 'USD Coin',
+          version: '2'
+        }
+      },
+      // Solana (SVM)
+      {
+        scheme: 'exact',
+        network: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
+        amount: amount.toString(),
+        asset: USDC_SOLANA,
+        payTo: ORAC_SOL_WALLET,
+        maxTimeoutSeconds: 300,
+        description,
+        extra: {
+          feePayer: DEXTER_SOL_FEE_PAYER,
+          name: 'USD Coin',
+          decimals: 6
+        }
       }
-    }],
+    ],
     resource: url,
     description: path === '/v1/scan'
       ? 'Prompt injection and manipulation detection'
@@ -365,9 +389,11 @@ async function verifyAndSettlePayment(paymentHeader, paymentRequirements) {
         : Buffer.from(paymentHeader, 'base64').toString('utf8')
     );
 
-    // Facilitator expects a single requirement from the accepts array
+    // Detect which chain the payment is for based on payload structure
+    // Solana payloads have a `transaction` field, EVM payloads have `authorization`
+    const isSolana = decoded.payload?.transaction && !decoded.payload?.authorization;
     const matchingRequirement = paymentRequirements.accepts.find(r =>
-      JSON.stringify(r) === JSON.stringify(decoded.accepted)
+      isSolana ? r.network.startsWith('solana:') : r.network.startsWith('eip155:')
     ) || paymentRequirements.accepts[0];
 
     const facilitatorBody = JSON.stringify({
@@ -498,9 +524,11 @@ function handleInfo() {
     },
     payment: {
       protocol: 'x402',
-      network: 'Base (eip155:8453)',
-      asset: 'USDC',
-      payTo: ORAC_WALLET
+      networks: [
+        { network: 'Base (eip155:8453)', asset: 'USDC', payTo: ORAC_EVM_WALLET },
+        { network: 'Solana (solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp)', asset: 'USDC SPL', payTo: ORAC_SOL_WALLET }
+      ],
+      facilitator: 'Dexter (https://x402.dexter.cash)'
     },
     patterns: {
       injectionPatterns: INJECTION_PATTERNS.length,
