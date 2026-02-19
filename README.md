@@ -1,6 +1,6 @@
 # Orac Safety Layer
 
-A paid security API for AI agents. Detects prompt injection attacks and audits skill source code for vulnerabilities — payments handled via the [x402 protocol](https://x402.org) using USDC on Base.
+A paid security API for AI agents. Detects prompt injection attacks and audits skill source code for vulnerabilities — payments handled via the [x402 protocol](https://x402.org) using USDC on Base (EVM) or Solana (SVM).
 
 **Live endpoint:** `https://orac-safety.orac.workers.dev`
 
@@ -22,21 +22,21 @@ This API uses [x402](https://x402.org) — a standard for HTTP micropayments.
 
 ### Client Flow
 
-1. Send a request **without** a payment header → receive `HTTP 402` with payment requirements
-2. Sign an EIP-3009 `transferWithAuthorization` for the specified amount (off-chain signature, no gas)
+1. Send a request **without** a payment header → receive `HTTP 402` with payment requirements (both EVM and Solana options)
+2. Sign a payment for your preferred chain:
+   - **Base (EVM):** EIP-3009 `transferWithAuthorization` (off-chain signature, no gas)
+   - **Solana (SVM):** Partially-signed SPL transfer transaction
 3. Resend the request with a `Payment-Signature` header containing the signed payload
 4. Receive `HTTP 200` with results + `X-Payment-Confirmed: true` header
 
 ### Server-Side Settlement
 
-When the server receives a payment header, it performs a two-step process via the [Dexter facilitator](https://x402.dexter.cash):
+When the server receives a payment header, it detects the chain from the payload structure and performs a two-step process via the [Dexter facilitator](https://x402.dexter.cash):
 
-1. **Verify** (`POST /verify`) — validates the EIP-3009 signature and confirms the payer has sufficient USDC
-2. **Settle** (`POST /settle`) — submits the `transferWithAuthorization` on-chain, transferring USDC to the payTo address and consuming the nonce to prevent replay
+1. **Verify** (`POST /verify`) — validates the signature and confirms the payer has sufficient USDC
+2. **Settle** (`POST /settle`) — submits the payment on-chain, transferring USDC to the payTo address
 
-Both steps must succeed before the API processes the request. Dexter sponsors the gas fees for settlement on Base.
-
-Payment is USDC on Base mainnet.
+Both steps must succeed before the API processes the request. Dexter sponsors the gas fees for settlement on both chains.
 
 ---
 
@@ -53,14 +53,22 @@ curl -s https://orac-safety.orac.workers.dev/v1/scan \
 ```json
 {
   "x402Version": 2,
-  "accepts": [{
-    "scheme": "exact",
-    "network": "eip155:8453",
-    "amount": "5000",
-    "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-    "payTo": "0x4a47B25c90eA79e32b043d9eE282826587187ca5",
-    "maxTimeoutSeconds": 300
-  }],
+  "accepts": [
+    {
+      "scheme": "exact",
+      "network": "eip155:8453",
+      "amount": "5000",
+      "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "payTo": "0x4a47B25c90eA79e32b043d9eE282826587187ca5"
+    },
+    {
+      "scheme": "exact",
+      "network": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+      "amount": "5000",
+      "asset": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "payTo": "3vD1Rt5qMz4vZR8jGND8n9YnVNvPBvX8tyTrWzZ3TMSb"
+    }
+  ],
   "resource": "https://orac-safety.orac.workers.dev/v1/scan"
 }
 ```
@@ -71,8 +79,32 @@ curl -s https://orac-safety.orac.workers.dev/v1/scan \
 
 ### Using the x402 JavaScript Client
 
+#### Using the orac-safety SDK (recommended)
+
+```bash
+npm install orac-safety
+```
+
+```js
+import { createSafetyClient } from 'orac-safety';
+
+const safety = createSafetyClient({
+  privateKey: process.env.WALLET_PRIVATE_KEY,        // EVM (required)
+  solanaPrivateKey: process.env.SOLANA_PRIVATE_KEY,  // Solana (optional)
+});
+
+const result = await safety.scan('Your prompt here');
+console.log(result.verdict);   // CLEAN | SUSPICIOUS | REVIEW_NEEDED | MALICIOUS
+console.log(result.riskScore); // 0–100
+```
+
+SDK repo: [github.com/Orac-G/orac-safety](https://github.com/Orac-G/orac-safety)
+
+#### Using @x402 directly
+
 ```bash
 npm install @x402/core @x402/evm viem
+# Optional for Solana: npm install @x402/svm @solana/kit
 ```
 
 ```js
@@ -294,10 +326,13 @@ Returns the full endpoint schema, payment details, and pattern counts.
 ## Payment Details
 
 - **Protocol:** x402 v2
-- **Network:** Base mainnet (`eip155:8453`)
-- **Asset:** USDC (`0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`)
-- **Facilitator:** [Dexter](https://x402.dexter.cash)
+- **Facilitator:** [Dexter](https://x402.dexter.cash) (sponsors gas on both chains)
 - **Header:** `Payment-Signature` (also accepts `X-Payment`)
+
+| Chain | Network | Asset | Pay To |
+|-------|---------|-------|--------|
+| Base (EVM) | `eip155:8453` | USDC `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` | `0x4a47B25c90eA79e32b043d9eE282826587187ca5` |
+| Solana (SVM) | `solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp` | USDC SPL `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v` | `3vD1Rt5qMz4vZR8jGND8n9YnVNvPBvX8tyTrWzZ3TMSb` |
 
 ---
 
@@ -320,7 +355,6 @@ The worker has no external dependencies beyond the Cloudflare runtime — all de
 - LLM-assisted analysis for edge cases pattern matching misses
 - `/v1/batch` endpoint for scanning multiple prompts in one payment
 - Webhook support for async audit results on large codebases
-- Solana/SPL USDC support alongside Base
 
 ---
 
