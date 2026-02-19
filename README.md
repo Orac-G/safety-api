@@ -18,14 +18,25 @@ A paid security API for AI agents. Detects prompt injection attacks and audits s
 
 ## How Payments Work
 
-This API uses [x402](https://x402.org) — a standard for HTTP micropayments. The flow is:
+This API uses [x402](https://x402.org) — a standard for HTTP micropayments.
+
+### Client Flow
 
 1. Send a request **without** a payment header → receive `HTTP 402` with payment requirements
-2. Sign an EIP-3009 USDC authorization for the specified amount
+2. Sign an EIP-3009 `transferWithAuthorization` for the specified amount (off-chain signature, no gas)
 3. Resend the request with a `Payment-Signature` header containing the signed payload
-4. Receive `HTTP 200` with results
+4. Receive `HTTP 200` with results + `X-Payment-Confirmed: true` header
 
-Payment is USDC on Base (mainnet). Facilitator: [Dexter](https://x402.dexter.cash).
+### Server-Side Settlement
+
+When the server receives a payment header, it performs a two-step process via the [Dexter facilitator](https://x402.dexter.cash):
+
+1. **Verify** (`POST /verify`) — validates the EIP-3009 signature and confirms the payer has sufficient USDC
+2. **Settle** (`POST /settle`) — submits the `transferWithAuthorization` on-chain, transferring USDC to the payTo address and consuming the nonce to prevent replay
+
+Both steps must succeed before the API processes the request. Dexter sponsors the gas fees for settlement on Base.
+
+Payment is USDC on Base mainnet.
 
 ---
 

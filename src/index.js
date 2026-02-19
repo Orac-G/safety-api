@@ -354,9 +354,10 @@ function buildPaymentRequired(path, url) {
   };
 }
 
-async function verifyPayment(paymentHeader, paymentRequirements) {
-  // Verify payment via Dexter facilitator (https://x402.dexter.cash)
-  // Dexter handles ECDSA signature verification and on-chain settlement
+async function verifyAndSettlePayment(paymentHeader, paymentRequirements) {
+  // x402 two-step flow via Dexter facilitator:
+  // 1. /verify — check signature validity and payer funds
+  // 2. /settle — submit payment on-chain (transfers USDC to payTo address)
   try {
     const decoded = JSON.parse(
       typeof atob !== 'undefined'
@@ -369,25 +370,45 @@ async function verifyPayment(paymentHeader, paymentRequirements) {
       JSON.stringify(r) === JSON.stringify(decoded.accepted)
     ) || paymentRequirements.accepts[0];
 
-    const response = await fetch(`${FACILITATOR_URL}/verify`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        x402Version: decoded.x402Version || 2,
-        paymentPayload: decoded,
-        paymentRequirements: matchingRequirement
-      })
+    const facilitatorBody = JSON.stringify({
+      x402Version: decoded.x402Version || 2,
+      paymentPayload: decoded,
+      paymentRequirements: matchingRequirement
     });
 
-    if (!response.ok) {
-      const err = await response.text();
-      return { isValid: false, invalidReason: `Facilitator error ${response.status}: ${err.substring(0, 200)}` };
+    // Step 1: Verify
+    const verifyResponse = await fetch(`${FACILITATOR_URL}/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: facilitatorBody
+    });
+
+    if (!verifyResponse.ok) {
+      const err = await verifyResponse.text();
+      return { isValid: false, invalidReason: `Verify error ${verifyResponse.status}: ${err.substring(0, 200)}` };
     }
 
-    const result = await response.json();
-    return result;
+    const verifyResult = await verifyResponse.json();
+    if (!verifyResult.isValid) {
+      return verifyResult;
+    }
+
+    // Step 2: Settle — submit payment on-chain
+    const settleResponse = await fetch(`${FACILITATOR_URL}/settle`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: facilitatorBody
+    });
+
+    if (!settleResponse.ok) {
+      const err = await settleResponse.text();
+      return { isValid: false, invalidReason: `Settlement error ${settleResponse.status}: ${err.substring(0, 200)}` };
+    }
+
+    const settleResult = await settleResponse.json();
+    return { isValid: true, payer: verifyResult.payer, settlement: settleResult };
   } catch (e) {
-    return { isValid: false, invalidReason: `verification_error: ${e.message}` };
+    return { isValid: false, invalidReason: `payment_error: ${e.message}` };
   }
 }
 
@@ -526,9 +547,9 @@ export default {
       });
     }
 
-    // Verify payment
+    // Verify and settle payment on-chain
     const requirements = buildPaymentRequired(path, request.url);
-    const verification = await verifyPayment(paymentHeader, requirements);
+    const verification = await verifyAndSettlePayment(paymentHeader, requirements);
 
     if (!verification.isValid) {
       return jsonResponse(402, {
