@@ -1,16 +1,27 @@
 /**
  * End-to-end x402 payment test for Orac Safety Layer
+ *
+ * Setup:
+ *   1. npm install @x402/core @x402/evm viem dotenv
+ *   2. Create a .env file with: WALLET_PRIVATE_KEY=0x...
+ *   3. node test-payment.js
+ *
+ * The wallet needs USDC on Base mainnet to make the payment.
  */
 
+require('dotenv').config();
 const https = require('https');
 const { x402Client, x402HTTPClient } = require('@x402/core/client');
 const { ExactEvmScheme } = require('@x402/evm');
 const { createWalletClient, http } = require('viem');
 const { privateKeyToAccount } = require('viem/accounts');
 const { base } = require('viem/chains');
-const { loadEnvFile } = require('../lib/load-env');
 
-const { WALLET_PRIVATE_KEY: PRIVATE_KEY } = loadEnvFile('../secrets/wallet.env');
+const PRIVATE_KEY = process.env.WALLET_PRIVATE_KEY;
+if (!PRIVATE_KEY) {
+  console.error('Error: WALLET_PRIVATE_KEY not set in environment or .env file');
+  process.exit(1);
+}
 
 const account = privateKeyToAccount(PRIVATE_KEY);
 const walletClient = createWalletClient({
